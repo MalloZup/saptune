@@ -1,5 +1,5 @@
 .\"/* 
-.\" * Copyright (c) 2018-2019 SUSE LLC.
+.\" * Copyright (c) 2018-2020 SUSE LLC.
 .\" * All rights reserved
 .\" * Authors: Angela Briel
 .\" *
@@ -15,7 +15,7 @@
 .\" */
 .\" 
 
-.TH "saptune-note" "5" "November 2019" "" "saptune note file format description"
+.TH "saptune-note" "5" "July 2020" "" "saptune note file format description"
 .SH NAME
 saptune\-note - Note definition files for saptune version \fB2\fP
 .SH DESCRIPTION
@@ -31,9 +31,50 @@ Lines starting with '[' indicate the begin of a new section.
 .SH SECTIONS
 A section starts with a '[section_name]' keyword in the first line, followed by lines with options and comments.
 
-The following section definitions are available and used in the saptune SAP Note definition files. Each of these sections can be used in a vendor or customer specific tuning definition placed in \fI/etc/saptune/extra\fP.
+It is possible to limit the scope of a section (e.g. to a special \fIhardware architecture\fP and/or a special \fIos version\fP) by adding tags to the section definition.
+.br
+Tags are separated  by ':' and can appear in any order. Unsupported tags are considered an error and the whole section is ignored.
+
+The \fBsyntax\fP for such sections is:
+
+[section_name:[tag=value]...]
+
+Supported tags are:
+.TP
+.BI os= <os_version>
+to define a special \fIos version\fP
+.br
+Valid values for \fBos=\fP are the values from the \fBVERSION=\fP line of \fB/etc/os-release\fP, e.g. 12-SP5 or 15-SP1
+.br
+To mark an entire major release the string 1[256]-* (wildcard) can be used.
+.TP
+.BI arch= <hardware_architecture>
+to define a special \fIhardware architecture\fP:
+.br
+Valid values for \fBarch=\fP are the output from \fBuname -i\fP
+
+.RE
+Example:
+.br
+[sysctl:os=15-SP1:arch=ppc64le]
+
+For processing a section the following rules apply:
+.IP \[bu]
+Only sections that match the system are processed. Sections without a tag are always used.
+.IP \[bu]
+The order of the section within the file matter. Eache section and each line in a section gets processed from top to down.
+.RE
+
+The rules apply for shipped Note definition files as well as for customer defined Note definition files. Tagged sections can be used in override files.
+
+\fBATTENTION:\fP To be clear - if there are more sections with the \fBsame\fP \fIsection_name\fP containing the \fBsame\fP \fIparameters\fP with \fBdifferent\fP \fIvalues\fP, the last valid section will win.
+.br
+So it's all about \fBorder\fP.
+
+The following section definitions are available and used in the saptune SAP Note definition files. Each of these sections can be used in a vendor or customer specific Note definition file placed in \fI/etc/saptune/extra\fP.
 
 List of supported sections:
+.br
 version, block, cpu, grub, limits, login, mem, pagecache, reminder, rpm, service, sysctl, vm
 
 See detailed description below:
@@ -45,6 +86,7 @@ Syntax:
 .br
 .nf
 .B # <prefix>NOTE=<noteId> CATEGORY=<category> VERSION=<versionNo> DATE=<release date of used note and related values> NAME="<description of the note>"
+.fi
 
 Example:
 .br
@@ -86,6 +128,13 @@ Valid values can be found in \fI/sys/block/<device>/queue/scheduler\fP.
 IO nr_requests specifies the maximum number of read and write requests that can be queued at one time. The default value is 128, which means that 128 read requests and 128 write requests can be queued before the next process to request a read or write is put to sleep.
 .br
 When set, the number of requests for \fBall\fP block devices on the system will be switched to the chosen value
+.TP
+.BI READ_AHEAD_KB= INT
+disk readahead (queue/read_ahead_kb) defines the maximum number of kilobytes that the operating system may read ahead during a sequential read operation. As a result, the likely-needed information is already present within the kernel page cache for the next sequential read, which improves read I/O performance.
+Device mappers often benefit from a high read_ahead_kb value.
+Increasing the read_ahead_kb value might improve performance in environments where sequential reading of large files takes place.
+.br
+When set, the value of read_ahead_kb for \fBall\fP block devices on the system will be switched to the chosen value
 \" section cpu
 .SH "[cpu]"
 The section "[cpu]" manipulates files in \fI/sys/devices/system/cpu/cpu*\fP.
@@ -141,18 +190,18 @@ ATTENTION: not idling *at all* increases power consumption significantly and red
 The section "[grub]" is checking kernel command line settings for grub.
 The values from the Note definition files are only checked against \fI/proc/cmdline\fP. Changing the grub configuration is not supported by saptune.
 
-Some of these values are set by saptune during runtime, so changing the grub configuration is possible but not needed.
+Some of these values are set by 'alternative' settings by saptune during runtime, so changing the grub configuration is possible but not needed.
 
 This section can contain options like:
 .TP
 \fBintel_idle.max_cstate=1\fP and \fBprocessor.max_cstate=1\fP
-Configure C-States for lower latency in Linux (applies to Intel-based systems only) - see energy_perf_bias, governor and force latency in section [cpu]
+Configure C-States for lower latency in Linux (applies to Intel-based systems only) - see force_latency in section [cpu] as 'alternative' settings
 .TP
 .BI numa_balancing=disable
-Turn off autoNUMA balancing - see kernel.numa_balancing in section [sysctl]
+Turn off autoNUMA balancing - see kernel.numa_balancing in section [sysctl] as 'alternative' settings
 .TP
 .BI transparent_hugepage=never
-Disable transparent hugepages - see THP in section [vm]
+Disable transparent hugepages - see THP in section [vm] as 'alternative' settings
 \" section limits
 .SH "[limits]"
 The section "[limits]" is dealing with ulimit settings for user login sessions in the pam_limits module. The settings will \fBNOT\fP be done in the central limits file \fI/etc/security/limits.conf\fP. Instead there will be a \fBdrop-in file\fP in \fI/etc/security/limits.d\fP for each domain-item-type combination used in the Note definition file.
@@ -185,13 +234,15 @@ The section "[login]" manipulates the behaviour of the systemd login manager.
 This section can \fBonly\fP contain the following option:
 .TP
 .BI UserTasksMax= STRING
+This option is only available on SLE12. In SLE15 the limit is removed from the systemd login manager and therefore the setting is no longer supported by saptune.
+
 This option configures a parameter of the systemd login manager. It sets the maximum number of OS tasks each user may run concurrently. The behaviour of the systemd login manager was changed starting SLES12SP2 to prevent fork bomb attacks.
 
 Recommended value is '\fBinfinity\fP'.
 
 If set, the drop-in file \fI/etc/systemd/logind.conf.d/saptune-UserTasksMax.conf\fP is created and for all currently logged in users the maximum number of OS tasks each user may run concurrently is changed using the command '\fBsystemctl --runtime set-property user-<uid>.slice TasksMax=<value>\fP'.
 .br
-After creating the drop-in file the \fIsystemd-logind.service\fP will be restarted.
+After creating the drop-in file the \fIsystemd-logind.service\fP will be reloaded.
 
 ATTENTION: With this setting your system is vulnerable to fork bomb attacks
 \" section mem
@@ -251,6 +302,8 @@ To remove the override, set the parameter to empty string.
 The section "[reminder]" contains important information and all settings of a SAP Note, which can not set by saptune. 
 
 This section is displayed at the end of the saptune options 'verify', 'simulate' and 'apply'. It will be highlighted with red color to get the attention of the customer.
+
+Sometimes this section may include lines with parameter settings commented out as the SAP Note only contains rough estimations as the settings are highly customer environment and workload dependend. Please be aware that these parameter settings can't be activated by an override file. If you need to set such parameters you need to create a 'custom' note containing these settings by using 'saptune note create'
 \" section rpm
 .SH "[rpm]"
 The section "[rpm]" is checking rpm versions on the system.
@@ -258,9 +311,13 @@ The values from the Note definition files are only checked against the installed
 .br
 Package dependencies - if needed - are handled by the saptune package installation.
 
-Syntax:
+With the availability of tagged sections, we support 2 different types of rpm line syntax. The first one - our \fBOld\fP Syntax - only for compatibility reasons. The second one - our \fBNew\fP Syntax - is our prefered syntax in combination with tagged rpm sections.
+
+\fBOld\fP Syntax:
 .br
 <rpm package name> <SLE Version> <rpm package version>
+.br
+this syntax is mainly used for compatibility reasons and when using a 'non-tagged' rpm section.
 .br
 Add one line for each SLE version a package should be checked for, even if the package version is the same.
 .br
@@ -279,6 +336,26 @@ util-linux 12-SP1 2.25-22.1
 Only the lines where the SLE version is matching the running system OS are checked and displayed during the 'verify' and 'simulate' option.
 .br
 That means, if there is no matching SLE version for the running OS no rpm entries are listed during the 'verify' and 'simulate' operation.
+
+\fBNew\fP Syntax:
+.br
+<rpm package name> <rpm package version>
+.br
+this syntax is the prefered syntax when using a 'tagged' rpm section, where the targeted operating system and/or system architecture is defined by using the tags \fBos=\fP and/or \fBarch=\fP
+.br
+Add one line for each package and package version to be checked.
+
+e.g
+.br
+systemd 228-142.1
+.br
+util-linux 2.25-22.1
+
+Only the lines where the tags of the section match the running system OS and/or the system architecture are checked and displayed during the 'verify' and 'simulate' option.
+.br
+That means, if there is no matching SLE version for the running OS and/or no matching system architecture in the tags of the rpm section no rpm entries are listed during the 'verify' and 'simulate' operation.
+
+
 \" section service
 .SH "[service]"
 The section "[service]" is dealing with starting and stopping services controlled by systemd.
@@ -297,7 +374,7 @@ Concerning \fBsysstat.service\fP please be in mind: A running sysstat service ca
 .br
 See sar(1), sa2(8), sa1(8) for more information
 
-If a service is enabled or disabled by default or admin choice, saptune will NOT disable or enable this service. It will only start/stop the service. If such a service is started by systemd during a system reboot \fBafter\fP the start of tuned.service it will be possible that a service is stopped/running even if it was started/stopped by saptune.
+If a service is enabled or disabled by default or admin choice, saptune will NOT disable or enable this service. It will only start/stop the service. If such a service is started by systemd during a system reboot \fBafter\fP the start of saptune.service it will be possible that a service is stopped/running even if it was started/stopped by saptune.
 \" section sysctl
 .SH "[sysctl]"
 The section "[sysctl]" can be used to modify kernel parameters. The parameters available are those listed under /proc/sys/.
@@ -329,7 +406,7 @@ But please do not change the files located here. You will lose all your changes 
 
 .SH "SEE ALSO"
 .LP
-saptune-migrate(7) saptune(8) saptune_v1(8) saptune_v2(8) tuned(8) tuned-adm(8)
+saptune-migrate(7) saptune(8) saptune_v1(8) saptune_v2(8)
 
 .SH AUTHOR
 .NF

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/SUSE/saptune/sap/note"
 	"io/ioutil"
 	"os"
@@ -62,6 +63,9 @@ func (state *State) Retrieve(noteID string, dest interface{}) error {
 	content, err := ioutil.ReadFile(state.GetPathToNote(noteID))
 	if err != nil {
 		return err
+	}
+	if len(content) == 0 {
+		return fmt.Errorf("empty state file")
 	}
 	return json.Unmarshal(content, dest)
 }

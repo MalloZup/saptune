@@ -219,3 +219,41 @@ func TestMissingCmd(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCPUErrorCases(t *testing.T) {
+	oldCpupowerCmd := cpupowerCmd
+	defer func() { cpupowerCmd = oldCpupowerCmd }()
+	cpupowerCmd = "/usr/bin/false"
+	val := GetPerfBias()
+	if val != "all:none" {
+		t.Error(val)
+	}
+	if err := SetPerfBias("all:15"); err != nil {
+		t.Errorf("should return 'nil' and not '%v'\n", err)
+	}
+	if IsValidGovernor("cpu0", "performance") {
+		if err := SetGovernor("all:performance", ""); err == nil {
+			t.Error("should return an error and not 'nil'")
+		}
+	} else {
+		if err := SetGovernor("all:performance", ""); err != nil {
+			t.Errorf("should return 'nil' and not '%v'\n", err)
+		}
+	}
+	if SupportsPerfBias() {
+		t.Error("reports supported, but shouldn't")
+	}
+	cpupowerCmd = oldCpupowerCmd
+
+	oldCPUDir := cpuDir
+	defer func() { cpuDir = oldCPUDir }()
+	cpuDir = "/unknownDir"
+	gval := GetGovernor()
+	if len(gval) != 0 {
+		t.Errorf("should return an empty value, but returns: %+v", gval)
+	}
+	if err := SetForceLatency("70", "cpu1:state0:0 cpu1:state1:0", "", false); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	cpuDir = oldCPUDir
+}

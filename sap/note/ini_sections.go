@@ -48,6 +48,10 @@ func OptSysctlVal(operator txtparser.Operator, key, actval, cfgval string) strin
 		// sysctl parameter not available in system
 		return ""
 	}
+	if cfgval == "" {
+		// sysctl parameter should be leave untouched
+		return ""
+	}
 	allFieldsC := strings.Fields(actval)
 	allFieldsE := strings.Fields(cfgval)
 	allFieldsS := ""
@@ -91,6 +95,7 @@ func OptSysctlVal(operator txtparser.Operator, key, actval, cfgval string) strin
 
 var isSched = regexp.MustCompile(`^IO_SCHEDULER_\w+$`)
 var isNrreq = regexp.MustCompile(`^NRREQ_\w+$`)
+var isRahead = regexp.MustCompile(`^READ_AHEAD_KB_\w+$`)
 
 // GetBlkVal initialise the block device structure with the current
 // system settings
@@ -117,6 +122,14 @@ func GetBlkVal(key string, cur *param.BlockDeviceQueue) (string, string, error) 
 		newReq = newNrR.(param.BlockDeviceNrRequests).NrRequests
 		retVal = strconv.Itoa(newReq[strings.TrimPrefix(key, "NRREQ_")])
 		cur.BlockDeviceNrRequests = newNrR.(param.BlockDeviceNrRequests)
+	case isRahead.MatchString(key):
+		newRah, err := cur.BlockDeviceReadAheadKB.Inspect()
+		if err != nil {
+			return "", info, err
+		}
+		newReq = newRah.(param.BlockDeviceReadAheadKB).ReadAheadKB
+		retVal = strconv.Itoa(newReq[strings.TrimPrefix(key, "READ_AHEAD_KB_")])
+		cur.BlockDeviceReadAheadKB = newRah.(param.BlockDeviceReadAheadKB)
 	}
 	return retVal, info, nil
 }
@@ -131,6 +144,8 @@ func OptBlkVal(key, cfgval string, cur *param.BlockDeviceQueue, bOK map[string][
 	sval := cfgval
 	switch {
 	case isSched.MatchString(key):
+		// ANGI TODO - support different scheduler per device or
+		// all devices with same scheduler (oval="all none")
 		oval := ""
 		sfound := false
 		dname := regexp.MustCompile(`^IO_SCHEDULER_(\w+)$`)
@@ -160,6 +175,13 @@ func OptBlkVal(key, cfgval string, cur *param.BlockDeviceQueue, bOK map[string][
 		ival, _ := strconv.Atoi(sval)
 		opt, _ := cur.BlockDeviceNrRequests.Optimise(ival)
 		cur.BlockDeviceNrRequests = opt.(param.BlockDeviceNrRequests)
+	case isRahead.MatchString(key):
+		if sval == "0" {
+			sval = "512"
+		}
+		ival, _ := strconv.Atoi(sval)
+		opt, _ := cur.BlockDeviceReadAheadKB.Optimise(ival)
+		cur.BlockDeviceReadAheadKB = opt.(param.BlockDeviceReadAheadKB)
 	}
 	return sval, info
 }
@@ -173,7 +195,7 @@ func SetBlkVal(key, value string, cur *param.BlockDeviceQueue, revert bool) erro
 		if revert {
 			cur.BlockDeviceSchedulers.SchedulerChoice[strings.TrimPrefix(key, "IO_SCHEDULER_")] = value
 		}
-		err = cur.BlockDeviceSchedulers.Apply()
+		err = cur.BlockDeviceSchedulers.Apply(strings.TrimPrefix(key, "IO_SCHEDULER_"))
 		if err != nil {
 			return err
 		}
@@ -182,7 +204,16 @@ func SetBlkVal(key, value string, cur *param.BlockDeviceQueue, revert bool) erro
 			ival, _ := strconv.Atoi(value)
 			cur.BlockDeviceNrRequests.NrRequests[strings.TrimPrefix(key, "NRREQ_")] = ival
 		}
-		err = cur.BlockDeviceNrRequests.Apply()
+		err = cur.BlockDeviceNrRequests.Apply(strings.TrimPrefix(key, "NRREQ_"))
+		if err != nil {
+			return err
+		}
+	case isRahead.MatchString(key):
+		if revert {
+			ival, _ := strconv.Atoi(value)
+			cur.BlockDeviceReadAheadKB.ReadAheadKB[strings.TrimPrefix(key, "READ_AHEAD_KB_")] = ival
+		}
+		err = cur.BlockDeviceReadAheadKB.Apply(strings.TrimPrefix(key, "READ_AHEAD_KB_"))
 		if err != nil {
 			return err
 		}
@@ -533,7 +564,13 @@ func SetGrubVal(value string) error {
 // system settings
 func GetServiceVal(key string) string {
 	var val string
-	service := system.GetServiceName(key)
+	serviceKey := key
+	keyFields := strings.Split(key, ":")
+	if len(keyFields) == 2 {
+		// keyFields[0] = systemd - for further use
+		serviceKey = keyFields[1]
+	}
+	service := system.GetServiceName(serviceKey)
 	if service == "" {
 		return "NA"
 	}
@@ -542,49 +579,108 @@ func GetServiceVal(key string) string {
 	} else {
 		val = "stop"
 	}
+	if system.SystemctlIsEnabled(service) {
+		val = fmt.Sprintf("%s, enable", val)
+	} else {
+		val = fmt.Sprintf("%s, disable", val)
+	}
 	return val
 }
 
 // OptServiceVal optimises the systemd service structure with the settings
 // from the configuration file
 func OptServiceVal(key, cfgval string) string {
-	sval := strings.ToLower(cfgval)
-	service := system.GetServiceName(key)
+	ssState := false
+	edState := false
+	retVal := ""
+	serviceKey := key
+	keyFields := strings.Split(key, ":")
+	if len(keyFields) == 2 {
+		// keyFields[0] = systemd - for further use
+		serviceKey = keyFields[1]
+	}
+	service := system.GetServiceName(serviceKey)
 	if service == "" {
 		return "NA"
 	}
-	if service == "uuidd.socket" && sval != "start" {
-		// for uuidd.socket we only support 'start' (bsc#1100107)
-		system.WarningLog("wrong selection '%s' for '%s'. Now set to 'start' to start the service\n", sval, service)
-		sval = "start"
-	}
 
-	if sval != "start" && sval != "stop" {
-		system.WarningLog("wrong selection '%s' for '%s'. Now set to 'start' to start the service\n", sval, service)
-		sval = "start"
+	for _, state := range strings.Split(cfgval, ",") {
+		sval := strings.ToLower(strings.TrimSpace(state))
+		if sval != "" && sval != "start" && sval != "stop" && sval != "enable" && sval != "disable" {
+			system.WarningLog("wrong service state '%s' for '%s'. Skipping...\n", sval, service)
+		}
+		setVal := ""
+		if sval == "start" || sval == "stop" {
+			if ssState {
+				system.WarningLog("multiple start/stop entries found, using the first one and skipping '%s'\n", sval)
+			} else {
+				// only the first 'start/stop' value is used
+				ssState = true
+				setVal = sval
+			}
+			// for uuidd.socket we only support 'start' (bsc#1100107)
+			if service == "uuidd.socket" && setVal != "start" {
+				system.WarningLog("wrong selection '%s' for '%s'. Now set to 'start' to start the service\n", sval, service)
+				setVal = "start"
+			}
+		}
+		if sval == "enable" || sval == "disable" {
+			if edState {
+				system.WarningLog("multiple enable/disable entries found, using the first one and skipping '%s'\n", sval)
+			} else {
+				// only the first 'enable/disable' value is used
+				edState = true
+				setVal = sval
+			}
+		}
+		if setVal == "" {
+			continue
+		}
+		if retVal == "" {
+			retVal = setVal
+		} else {
+			retVal = fmt.Sprintf("%s, %s", retVal, setVal)
+		}
 	}
-	return sval
+	if service == "uuidd.socket" {
+		if retVal == "" {
+			system.WarningLog("Set missing selection 'start' for '%s' to start the service\n", service)
+			retVal = "start"
+		} else if !ssState {
+			system.WarningLog("Set missing selection 'start' for '%s' to start the service\n", service)
+			retVal = fmt.Sprintf("%s, start", retVal)
+		}
+	}
+	return retVal
 }
 
 // SetServiceVal applies the settings to the system
 func SetServiceVal(key, value string) error {
 	var err error
-	service := system.GetServiceName(key)
+	serviceKey := key
+	keyFields := strings.Split(key, ":")
+	if len(keyFields) == 2 {
+		// keyFields[0] = systemd - for further use
+		serviceKey = keyFields[1]
+	}
+	service := system.GetServiceName(serviceKey)
 	if service == "" {
 		return nil
 	}
-	if value == "start" && !system.SystemctlIsRunning(service) {
-		err = system.SystemctlStart(service)
-	}
-	if value == "stop" {
-		if service == "uuidd.socket" {
-			if !system.SystemctlIsRunning(service) {
-				err = system.SystemctlStart(service)
-			}
-		} else {
-			if system.SystemctlIsRunning(service) {
-				err = system.SystemctlStop(service)
-			}
+	for _, state := range strings.Split(value, ",") {
+		sval := strings.ToLower(strings.TrimSpace(state))
+
+		if sval == "start" && !system.SystemctlIsRunning(service) {
+			err = system.SystemctlStart(service)
+		}
+		if sval == "stop" && system.SystemctlIsRunning(service) {
+			err = system.SystemctlStop(service)
+		}
+		if sval == "enable" && !system.SystemctlIsEnabled(service) {
+			err = system.SystemctlEnable(service)
+		}
+		if sval == "disable" && system.SystemctlIsEnabled(service) {
+			err = system.SystemctlDisable(service)
 		}
 	}
 	return err
@@ -622,11 +718,20 @@ func OptLoginVal(cfgval string) string {
 func SetLoginVal(key, value string, revert bool) error {
 	switch key {
 	case "UserTasksMax":
+		// set limit per active user (for both - revert and apply)
+		if value != "" && value != "NA" {
+			for _, userID := range system.GetCurrentLogins() {
+				if err := system.SetTasksMax(userID, value); err != nil {
+					return err
+				}
+			}
+		}
+		// handle drop-in file
 		if revert && IsLastNoteOfParameter(key) {
 			// revert - remove logind drop-in file
 			os.Remove(path.Join(LogindConfDir, LogindSAPConfFile))
-			// restart systemd-logind.service
-			err := system.SystemctlRestart("systemd-logind.service")
+			// reload-or-try-restart systemd-logind.service
+			err := system.SystemctlReloadTryRestart("systemd-logind.service")
 			return err
 		}
 		if value != "" && value != "NA" {
@@ -642,20 +747,13 @@ func SetLoginVal(key, value string, revert bool) error {
 			if err := ioutil.WriteFile(path.Join(LogindConfDir, LogindSAPConfFile), []byte(LogindSAPConfContent), 0644); err != nil {
 				return err
 			}
-			// restart systemd-logind.service
-			if err := system.SystemctlRestart("systemd-logind.service"); err != nil {
+			// reload-or-try-restart systemd-logind.service
+			if err := system.SystemctlReloadTryRestart("systemd-logind.service"); err != nil {
 				return err
 			}
 			if value == "infinity" {
 				system.WarningLog("Be aware: system-wide UserTasksMax is now set to infinity according to SAP recommendations.\n" +
 					"This opens up entire system to fork-bomb style attacks.")
-			}
-			// set per user
-			for _, userID := range system.GetCurrentLogins() {
-				//oldLimit := system.GetTasksMax(userID)
-				if err := system.SetTasksMax(userID, value); err != nil {
-					return err
-				}
 			}
 		}
 	}

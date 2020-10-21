@@ -165,6 +165,7 @@ func CompareJSValue(v1, v2 interface{}, op string) (v1JS, v2JS string, match boo
 func CompareNoteFields(actualNote, expectedNote Note) (allMatch bool, comparisons map[string]FieldComparison, valApplyList []string) {
 	comparisons = make(map[string]FieldComparison)
 	allMatch = true
+	grubAvail := false
 	// Compare all fields
 	refActualNote := reflect.ValueOf(actualNote)
 	refExpectedNote := reflect.ValueOf(expectedNote)
@@ -177,6 +178,9 @@ func CompareNoteFields(actualNote, expectedNote Note) (allMatch bool, comparison
 			actualMap := refActualNote.Field(i)
 			expectedMap := refExpectedNote.Field(i)
 			for _, key := range actualMap.MapKeys() {
+				if strings.Contains(key.String(), "grub") {
+					grubAvail = true
+				}
 				actualValue := actualMap.MapIndex(key).Interface()
 				expectedValue := expectedMap.MapIndex(key).Interface()
 				ckey := fmt.Sprintf("%s[%s]", fieldName, key.String())
@@ -187,7 +191,21 @@ func CompareNoteFields(actualNote, expectedNote Note) (allMatch bool, comparison
 					valApplyList = append(valApplyList, comparisons[ckey].ReflectMapKey)
 				}
 				if !comparisons[ckey].MatchExpectation {
-					allMatch = false
+					// a parameter, which is not supported
+					// by the system ("all:none") should not
+					// influence the compare result
+					//
+					// and grub compliance of saptune
+					// integrated notes will be handled
+					// at the end of the compare
+					// all other grub settings treated as
+					// normal parameters
+					// if this should change in the future use
+					// !strings.Contains(key.String(), "grub")
+					// instead of !isInternalGrub(key.String())
+					if actualValue.(string) != "all:none" && !isInternalGrub(key.String()) {
+						allMatch = false
+					}
 				}
 			}
 		} else {
@@ -198,7 +216,57 @@ func CompareNoteFields(actualNote, expectedNote Note) (allMatch bool, comparison
 			}
 		}
 	}
+	if allMatch && grubAvail {
+		allMatch = chkGrubCompliance(comparisons, allMatch)
+	}
 	return
+}
+
+// isInternalGrub - checks, if a grub setting found in the note definition
+// is a saptune integrated grub parameter or a customer specific parameter
+func isInternalGrub(val string) bool {
+	// define saptune integrated grub parameter
+	internalGrub := []string{"grub:numa_balancing", "grub:transparent_hugepage", "grub:intel_idle.max_cstate", "grub:processor.max_cstate"}
+
+	for _, item := range internalGrub {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
+// chkGrubCompliance grub special - check compliance of alternative settings
+// only if one of these alternatives are not compliant, modify the result of
+// the compare
+// restricted to grub parameter shipped with saptune integrated notes
+// grub parameter and 'alternative' setting have to be within the same note
+func chkGrubCompliance(comparisons map[string]FieldComparison, allMatch bool) bool {
+	// grub:numa_balancing, kernel.numa_balancing
+	// grub:transparent_hugepage, THP
+	// grub:intel_idle.max_cstate, grub:processor.max_cstate, force_latency
+	entries := []string{"grub:numa_balancing#kernel.numa_balancing", "grub:transparent_hugepage#THP", "grub:intel_idle.max_cstate#force_latency", "grub:processor.max_cstate#force_latency"}
+
+	for _, item := range entries {
+		entFields := strings.Split(item, "#")
+		grubEnt := entFields[0]
+		alterEnt := entFields[1]
+		grubEntry := fmt.Sprintf("SysctlParams[%s]", grubEnt)
+		alterEntry := fmt.Sprintf("SysctlParams[%s]", alterEnt)
+
+		if comparisons[grubEntry].ReflectMapKey == grubEnt && !comparisons[grubEntry].MatchExpectation {
+			if alterEnt == "force_latency" {
+				if (comparisons[alterEntry].ReflectMapKey == alterEnt && !comparisons[alterEntry].MatchExpectation && comparisons[alterEntry].ActualValue != "all:none") && allMatch {
+					allMatch = false
+				}
+			} else {
+				if comparisons[alterEntry].ReflectMapKey == alterEnt && !comparisons[alterEntry].MatchExpectation && allMatch {
+					allMatch = false
+				}
+			}
+		}
+	}
+	return allMatch
 }
 
 // cmpMapValue compares map values
@@ -211,6 +279,22 @@ func cmpMapValue(fieldName string, key reflect.Value, actVal, expVal interface{}
 	if strings.Split(key.String(), ":")[0] == "rpm" {
 		match = system.CmpRpmVers(actVal.(string), expVal.(string))
 	}
+	if strings.Split(key.String(), ":")[0] == "systemd" {
+		match = system.CmpServiceStates(actVal.(string), expVal.(string))
+	}
+	if expVal == "" {
+		// if the expected value is empty, the parameter value will
+		// be untouched
+		// this case should not influence the compare result
+		// so set match to true
+		match = true
+	}
+	if key.String() == "reminder" {
+		// a diff in the reminder section should not influence the
+		// compare result. So set macth to true
+		match = true
+	}
+
 	fieldComparison := FieldComparison{
 		ReflectFieldName: fieldName,
 		ReflectMapKey:    key.String(),

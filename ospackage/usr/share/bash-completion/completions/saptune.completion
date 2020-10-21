@@ -1,9 +1,11 @@
-# v1.2
+# v1.4
 #
 #   saptune daemon [ start | status | stop ]
-#   saptune note [ list | verify ]
-#   saptune note [ apply | simulate | verify | customise | revert | create | show ] NoteID
-#   saptune solution [ list | verify ]
+#   saptune service [ start | status | stop | enable | disable | enablestart | stopdisable ]
+#   saptune note [ list | verify | enabled ]
+#   saptune note [ apply | simulate | verify | customise | revert | create | show | delete ] NoteID
+#   saptune note rename NoteID NoteID
+#   saptune solution [ list | verify | enabled ]
 #   saptune solution [ apply | simulate | verify | revert ] SolutionName
 #   saptune revert all
 #   saptune version
@@ -19,15 +21,17 @@ _saptune() {
     
     case ${COMP_CWORD} in 
 
-        1)  opts="daemon solution note revert version --version help"
+        1)  opts="daemon service solution note revert version --version help"
             ;;
         
         2)  case "${prev}" in
                 daemon)     opts="start status stop"
                             ;;
-                solution)   opts="list verify apply simulate revert"
+                service)    opts="start status stop enable disable enablestart stopdisable"
                             ;;
-                note)       opts="list verify apply simulate customise revert create show"
+                solution)   opts="list verify apply simulate revert enabled"
+                            ;;
+                note)       opts="list verify apply simulate customise revert create show delete rename enabled"
                             ;;
 		revert)	    opts="all"	
 			    ;;
@@ -36,7 +40,7 @@ _saptune() {
             ;;
 
         3)  case "${prev}" in
-                apply|simulate|verify|customise|revert|create|show)
+                apply|simulate|verify|customise|revert|create|show|delete|rename)
                         case "${COMP_WORDS[COMP_CWORD-2]}" in
                             note)       opts=$((ls -1q /usr/share/saptune/notes/ ; find /etc/saptune/extra/ -name '*.conf' -printf '%f\n' | cut -d '-' -f 1 | sed 's/\.conf$//') | tr '\n' ' ') 
                                         ;;

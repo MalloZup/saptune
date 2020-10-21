@@ -10,7 +10,7 @@ import (
 
 var sysconfSampleText = `## Path:        Productivity/Other
 ## Description: Limits for system tuning profile "sap-netweaver".
-## ServiceRestart: tuned
+## ServiceRestart: saptune
 
 ## Type:        integer
 ## Default:     8388608
@@ -39,7 +39,7 @@ INTARY_TEST=" 12 34 abc 56 "
 
 var sysconfigMatchText = `## Path:        Productivity/Other
 ## Description: Limits for system tuning profile "sap-netweaver".
-## ServiceRestart: tuned
+## ServiceRestart: saptune
 
 ## Type:        integer
 ## Default:     8388608
@@ -104,6 +104,9 @@ func TestSysconfig(t *testing.T) {
 		t.Error(val)
 	}
 	if val := conf.GetUint64("KEY_DOES_NOT_EXIST", 0); val != 0 {
+		t.Error(val)
+	}
+	if val := conf.GetUint64("BOOL_TEST_YES", 0); val != 0 {
 		t.Error(val)
 	}
 	if val := conf.GetString("KEY_DOES_NOT_EXIST", "DEFAULT"); val != "DEFAULT" {

@@ -17,6 +17,12 @@ func TestSystemctl(t *testing.T) {
 	}
 
 	testService := "rpcbind.service"
+	if !IsServiceAvailable("rpcbind") {
+		t.Fatalf("service 'rpcbind' not available on the system\n")
+	}
+	if !IsServiceAvailable(testService) {
+		t.Fatalf("service '%s' not available on the system\n", testService)
+	}
 	if err := SystemctlEnable(testService); err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +36,12 @@ func TestSystemctl(t *testing.T) {
 		t.Fatalf("service '%s' not running\n", testService)
 	}
 	if err := SystemctlRestart(testService); err != nil {
+		t.Fatal(err)
+	}
+	if !SystemctlIsRunning(testService) {
+		t.Fatalf("service '%s' not running\n", testService)
+	}
+	if err := SystemctlReloadTryRestart(testService); err != nil {
 		t.Fatal(err)
 	}
 	if !SystemctlIsRunning(testService) {
@@ -54,6 +66,9 @@ func TestSystemctl(t *testing.T) {
 		t.Fatalf("service '%s' still running\n", testService)
 	}
 
+	if IsServiceAvailable("UnkownService") {
+		t.Fatalf("service '%s' should not, but is available on the system\n", testService)
+	}
 	if err := SystemctlEnable("UnkownService"); err == nil {
 		t.Fatal(err)
 	}
@@ -65,6 +80,26 @@ func TestSystemctl(t *testing.T) {
 	}
 	if err := SystemctlDisableStop("UnkownService"); err == nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSystemctlIsEnabled(t *testing.T) {
+	testService := "rpcbind.service"
+	if SystemctlIsEnabled(testService) {
+		t.Errorf("service '%s' is detected as enabled, but should be disabled", testService)
+	}
+	if err := SystemctlEnableStart(testService); err != nil {
+		t.Errorf("Error enable and start '%s': '%v'\n", testService, err)
+	}
+	if !SystemctlIsEnabled(testService) {
+		t.Errorf("service '%s' is detected as disabled, but should be enabled", testService)
+	}
+	if err := SystemctlDisableStop(testService); err != nil {
+		t.Errorf("Error disable and stop '%s': '%v'\n", testService, err)
+	}
+
+	if SystemctlIsEnabled("UnkownService") {
+		t.Errorf("service 'UnkownService' is detected as enabled, which is not possible")
 	}
 }
 
@@ -82,6 +117,96 @@ func TestSystemctlIsRunning(t *testing.T) {
 		if err := SystemctlStart("tuned.service"); err != nil {
 			t.Log(err)
 		}
+	}
+}
+
+func TestCmpServiceStates(t *testing.T) {
+	match := false
+	current := "stop, disable"
+	expected := "stop"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "start"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "enable"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "disable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = ""
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "start, enable"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "enable, stop"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "start, disable"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "disable, stop"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "stop, start, disable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "start, stop, disable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "start, hugo, stop, disable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "start, hugo, stop, enable, disable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "sToP, hugo, start, disable, enable"
+	match = CmpServiceStates(current, expected)
+	if !match {
+		t.Errorf("'%s' should match '%s'\n", expected, current)
+	}
+	expected = "stop, hugo, start, enable"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "start, stop, enable"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
+	}
+	expected = "hugo"
+	match = CmpServiceStates(current, expected)
+	if match {
+		t.Errorf("'%s' should NOT match '%s'\n", expected, current)
 	}
 }
 
@@ -180,4 +305,58 @@ func TestGetTunedAdmProfile(t *testing.T) {
 	if actVal != "" {
 		t.Fatalf("seams 'tuned-adm off' does not work: profile is '%v'\n", actVal)
 	}
+}
+
+func TestDaemonErrorCases(t *testing.T) {
+	oldSystemctlCmd := systemctlCmd
+	systemctlCmd = "/usr/bin/false"
+	if err := SystemctlRestart("tstserv"); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	if err := SystemctlReloadTryRestart("tstserv"); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	if err := SystemctlStart("tstserv"); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	if err := SystemctlStop("tstserv"); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	if IsServiceAvailable("tstserv") {
+		t.Error("service 'tstserv' should not, but is available on the system")
+	}
+	systemctlCmd = oldSystemctlCmd
+
+	oldActTunedProfile := actTunedProfile
+	actTunedProfile = "/etc/tst/tst/tstProfile"
+	actProfile := GetTunedProfile()
+	if actProfile != "" {
+		t.Error(actProfile)
+	}
+	profileName := "balanced"
+	if err := WriteTunedAdmProfile(profileName); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	actTunedProfile = oldActTunedProfile
+
+	oldTunedAdmCmd := tunedAdmCmd
+	tunedAdmCmd = "/usr/bin/false"
+	if err := TunedAdmOff(); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	if err := TunedAdmProfile("balanced"); err == nil {
+		t.Error("should return an error and not 'nil'")
+	}
+	tunedAdmCmd = "/usr/bin/true"
+	actVal := GetTunedAdmProfile()
+	if actVal != "" {
+		t.Error(actVal)
+	}
+
+	tunedAdmCmd = oldTunedAdmCmd
+	_ = SystemctlStop("tuned.service")
+	if err := TunedAdmOff(); err != nil {
+		t.Error(err)
+	}
+	_ = SystemctlStart("tuned.service")
 }
